@@ -54,6 +54,7 @@ void LunaHost::savesettings()
     configs->set("flushDelay", TextThread::flushDelay);
     configs->set("maxBufferSize", TextThread::maxBufferSize);
     configs->set("maxHistorySize", TextThread::maxHistorySize);
+    configs->set("enablePCHooks", Host::enablePCHooks);
     configs->set("defaultCodepage", Host::defaultCodepage);
     {
         std::lock_guard _(statemutex);
@@ -95,7 +96,12 @@ void LunaHost::loadsettings()
     autoattach_savedonly = configs->get("AutoAttach_SavedOnly", true);
     TextThread::flushDelay = configs->get("flushDelay", TextThread::flushDelay);
     TextThread::maxBufferSize = configs->get("maxBufferSize", TextThread::maxBufferSize);
-    TextThread::maxHistorySize = configs->get("maxHistorySize", TextThread::maxHistorySize);
+    // The host default is 10 million chars (~20 MB) of history per hook thread; a reader only needs
+    // the recent lines. Old configs saved that default verbatim, so treat it as "not chosen".
+    TextThread::maxHistorySize = configs->get("maxHistorySize", 200'000);
+    if (TextThread::maxHistorySize == 10'000'000)
+        TextThread::maxHistorySize = 200'000;
+    Host::enablePCHooks = configs->get("enablePCHooks", Host::enablePCHooks);
     Host::defaultCodepage = configs->get("defaultCodepage", Host::defaultCodepage);
     autoattachexes = configs->get("autoattachexes", std::set<std::string>{});
     savedhookcontext = configs->get("savedhookcontext", decltype(savedhookcontext){});
@@ -377,15 +383,28 @@ std::wstring sanitize(const std::wstring &s1)
 }
 void LunaHost::showtext(const std::wstring &text, bool clear)
 {
+    // An edit control gets slow as its text grows, and it used to grow without limit.
+    constexpr int maxShown = 300'000, trimTo = 200'000;
     auto output = sanitize(text);
     strReplace(output, L"\n", L"\r\n");
     if (clear)
     {
+        if (output.size() > maxShown)
+            output = output.substr(output.size() - trimTo);
         g_showtexts->settext(output);
         g_showtexts->scrolltoend();
     }
     else
     {
+        HWND edit = g_showtexts->winId;
+        int len = GetWindowTextLengthW(edit);
+        if (len + (int)output.size() > maxShown)
+        {
+            // drop the oldest text in one go (EM_REPLACESEL on the selection [0, cut))
+            int cut = min(len, len + (int)output.size() - trimTo);
+            SendMessageW(edit, EM_SETSEL, 0, cut);
+            SendMessageW(edit, EM_REPLACESEL, FALSE, (LPARAM)L"");
+        }
         g_showtexts->scrolltoend();
         g_showtexts->appendtext(output);
     }
@@ -607,6 +626,9 @@ Settingwindow::Settingwindow(LunaHost *host) : mainwindow(host)
     addspin(13, L"    Minimum phrase length", cfg.minPhraseLength, 2, 100);
     addcheck(14, L"Remove typewriter partial text (ここんこんに → こんに)", cfg.typewriter);
     addcheck(15, L"Skip a line identical to the previous one from the same hook", cfg.duplicateLines);
+    // hooks on GDI/GDI+/D3DX text functions: catch-all for unknown engines, but they fire for all
+    // text the game draws (menus, UI) and add overhead; takes effect for newly attached games
+    addcheck(16, L"Hook system text functions (GDI/D3DX) on attach - needed for unknown engines", Host::enablePCHooks);
 
     setlayout(mainlayout);
     setcentral(700, 800);
