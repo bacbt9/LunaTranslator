@@ -35,10 +35,36 @@ namespace re
     }
   }
 
+  // Compiling a std::regex is very slow (much slower than running it), and the engine filters call
+  // these helpers with the same literal patterns for every line of text, inside the game's thread.
+  // So compiled patterns are cached. Thread-safe; the cache is intentionally never destroyed
+  // (avoids static-destruction problems when the hook DLL is unloaded, e.g. on XP).
+  template <typename CharT>
+  std::shared_ptr<const std::basic_regex<CharT>> compiled(const CharT *pattern, std::regex_constants::syntax_option_type flags = std::regex_constants::ECMAScript)
+  {
+    using Key = std::pair<std::basic_string<CharT>, int>;
+    static auto *lock = new std::mutex;
+    static auto *cache = new std::map<Key, std::shared_ptr<const std::basic_regex<CharT>>>;
+    Key key{pattern, (int)flags};
+    {
+      std::lock_guard _(*lock);
+      auto found = cache->find(key);
+      if (found != cache->end())
+        return found->second;
+    }
+    // compile outside the lock; an invalid pattern throws here just like before
+    auto re = std::make_shared<const std::basic_regex<CharT>>(pattern, flags);
+    std::lock_guard _(*lock);
+    if (cache->size() > 2048) // only literal patterns are expected; this just bounds pathological use
+      cache->clear();
+    cache->emplace(std::move(key), re);
+    return re;
+  }
+
   template <typename CharT, class StringT = std::basic_string<CharT>>
   StringT sub(const StringT &str, const CharT *pattern, const CharT *as = default_string<CharT>(), std::regex_constants::syntax_option_type _Flags = std::regex_constants::ECMAScript)
   {
-    return std::regex_replace(str, std::basic_regex<CharT>(pattern, _Flags), as);
+    return std::regex_replace(str, *compiled(pattern, _Flags), as);
   }
   template <typename CharT>
   using MatchT = std::conditional_t<std::is_same_v<CharT, char>, std::smatch, std::conditional_t<std::is_same_v<CharT, wchar_t>, std::wsmatch, void>>;
@@ -47,7 +73,7 @@ namespace re
   std::optional<Match> match(const StringT &str, const CharT *pattern)
   {
     Match match;
-    if (!std::regex_match(str, match, std::basic_regex<CharT>(pattern)))
+    if (!std::regex_match(str, match, *compiled(pattern)))
       return {};
     return match;
   }
@@ -55,15 +81,15 @@ namespace re
   std::optional<Match> search(const StringT &str, const CharT *pattern)
   {
     Match match;
-    if (!std::regex_search(str, match, std::basic_regex<CharT>(pattern)))
+    if (!std::regex_search(str, match, *compiled(pattern)))
       return {};
     return match;
   }
   template <typename CharT, class StringT = std::basic_string<CharT>, class iteratorT = std::conditional_t<std::is_same_v<CharT, char>, std::sregex_token_iterator, std::conditional_t<std::is_same_v<CharT, wchar_t>, std::wsregex_token_iterator, void>>>
   std::vector<StringT> split(const StringT &str, const CharT *pattern)
   {
-    auto r = std::basic_regex<CharT>(pattern);
-    iteratorT it(str.begin(), str.end(), r, -1);
+    auto r = compiled(pattern); // the iterators keep a pointer to the regex: hold it until done
+    iteratorT it(str.begin(), str.end(), *r, -1);
     iteratorT end;
     std::vector<StringT> parts(it, end);
     return parts;
