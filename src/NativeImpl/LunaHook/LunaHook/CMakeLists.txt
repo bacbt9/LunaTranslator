@@ -1,8 +1,9 @@
 include(FetchContent)
 FetchContent_Declare(minhook
 GIT_REPOSITORY https://github.com/TsudaKageyu/minhook
-	GIT_TAG master
-	GIT_SHALLOW TRUE
+	# pinned (was: master) so an upstream change can't silently break or alter the hook DLL.
+	# a commit hash can't be fetched shallowly, so GIT_SHALLOW is off; the repo is small.
+	GIT_TAG 8af6b4acae5a9388fd742b56fa79ece89d96f823
 )
 FetchContent_MakeAvailable(minhook)
 
