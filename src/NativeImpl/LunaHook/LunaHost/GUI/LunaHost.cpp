@@ -37,7 +37,7 @@ void LunaHost::on_close()
     savesettings();
     delete configs;
     configs = nullptr;
-    auto _attachedprocess = attachedprocess;
+    auto _attachedprocess = attachedsnapshot();
     for (auto pid : _attachedprocess)
     {
         Host::DetachProcess(pid);
@@ -55,8 +55,11 @@ void LunaHost::savesettings()
     configs->set("maxBufferSize", TextThread::maxBufferSize);
     configs->set("maxHistorySize", TextThread::maxHistorySize);
     configs->set("defaultCodepage", Host::defaultCodepage);
-    configs->set("autoattachexes", autoattachexes);
-    configs->set("savedhookcontext", savedhookcontext);
+    {
+        std::lock_guard _(statemutex);
+        configs->set("autoattachexes", autoattachexes);
+        configs->set("savedhookcontext", savedhookcontext);
+    }
     configs->set("DefaultFont2", WideStringToString(uifont.fontfamily));
     configs->set("fontsize", uifont.fontsize);
     configs->set("font_italic", uifont.italic);
@@ -112,24 +115,31 @@ void LunaHost::doautoattach()
     if (autoattach == false && autoattach_savedonly == false)
         return;
 
-    if (autoattachexes.empty())
+    // exes that may be auto attached; if none, skip the (fairly costly) process scan entirely
+    std::set<std::string> candidates;
+    {
+        std::lock_guard _(statemutex);
+        for (auto &exe : autoattachexes)
+            if (!autoattach_savedonly || savedhookcontext.count(exe))
+                candidates.insert(exe);
+    }
+    if (candidates.empty())
         return;
 
     for (auto [pexe, pids] : getprocesslist())
     {
         auto &&u8procname = WideStringToString(pexe);
-        if (autoattachexes.find(u8procname) == autoattachexes.end())
+        if (!candidates.count(u8procname))
             continue;
-        if (autoattach_savedonly && savedhookcontext.find(u8procname) == savedhookcontext.end())
-            continue;
-        for (auto pid : pids)
+        std::vector<DWORD> toattach;
         {
-            if (userdetachedpids.find(pid) != userdetachedpids.end())
-                continue;
-
-            if (attachedprocess.find(pid) == attachedprocess.end())
-                Host::ConnectAndInjectProcess(pid);
+            std::lock_guard _(statemutex);
+            for (auto pid : pids)
+                if (!userdetachedpids.count(pid) && !attachedprocess.count(pid))
+                    toattach.push_back(pid);
         }
+        for (auto pid : toattach)
+            Host::ConnectAndInjectProcess(pid);
 
         break;
     }
@@ -137,28 +147,31 @@ void LunaHost::doautoattach()
 
 void LunaHost::on_proc_disconnect(DWORD pid)
 {
+    std::lock_guard _(statemutex);
     attachedprocess.erase(pid);
 }
 
 void LunaHost::on_proc_connect(DWORD pid)
 {
-    attachedprocess.insert(pid);
-
-    if (auto pexe = getModuleFilename(pid))
+    std::string hookcode;
     {
-        autoattachexes.insert(WideStringToString(pexe.value()));
-        auto u8procname = WideStringToString(pexe.value());
-        if (savedhookcontext.find(u8procname) != savedhookcontext.end())
+        std::lock_guard _(statemutex);
+        attachedprocess.insert(pid);
+        if (auto pexe = getModuleFilename(pid))
         {
-            std::string name = safequeryjson(savedhookcontext[u8procname], "name", std::string());
-            if (startWith(name, "UserHook"))
+            auto u8procname = WideStringToString(pexe.value());
+            autoattachexes.insert(u8procname);
+            auto found = savedhookcontext.find(u8procname);
+            if (found != savedhookcontext.end())
             {
-                std::string hookcode = safequeryjson(savedhookcontext[u8procname], "hookcode", std::string());
-                if (!hookcode.empty())
-                    Host::InsertHook(pid, StringToWideString(hookcode));
+                std::string name = safequeryjson(found->second, "name", std::string());
+                if (startWith(name, "UserHook"))
+                    hookcode = safequeryjson(found->second, "hookcode", std::string());
             }
         }
     }
+    if (!hookcode.empty())
+        Host::InsertHook(pid, StringToWideString(hookcode));
 }
 
 LunaHost::LunaHost()
@@ -176,9 +189,10 @@ LunaHost::LunaHost()
     btndetachall = new button(this, TR[BtnDetach]);
     btndetachall->onclick = [&]()
     {
-        for (auto pid : attachedprocess)
+        for (auto pid : attachedsnapshot())
         {
             Host::DetachProcess(pid);
+            std::lock_guard _(statemutex);
             userdetachedpids.insert(pid);
         }
     };
@@ -211,7 +225,7 @@ LunaHost::LunaHost()
         auto hookcode = g_hEdit_userhook->text();
         if (!hookcode.empty())
         {
-            for (auto _ : attachedprocess)
+            for (auto _ : attachedsnapshot())
             {
                 Host::InsertHook(_, hookcode);
             }
@@ -247,10 +261,12 @@ LunaHost::LunaHost()
                  {
          
             Host::DetachProcess(tt->tp.processId);
+            std::lock_guard _(statemutex);
             userdetachedpids.insert(tt->tp.processId); });
         menu.add_sep();
         menu.add(TR[MenuRemeberSelect], [&, tt]()
                  {
+            std::lock_guard _(statemutex);
             if(auto pexe=getModuleFilename(tt->tp.processId))
                 savedhookcontext[WideStringToString(pexe.value())]={
                     {"hookcode",WideStringToString(tt->hp.hookcode)},
@@ -261,6 +277,7 @@ LunaHost::LunaHost()
             saveall(); });
         menu.add(TR[MenuForgetSelect], [&, tt]()
                  {
+                std::lock_guard _(statemutex);
                 if(auto pexe=getModuleFilename(tt->tp.processId))
                         savedhookcontext.erase(WideStringToString(pexe.value()));
                 saveall(); });
@@ -321,12 +338,18 @@ void LunaHost::on_text_recv_checkissaved(TextThread &thread)
     if (auto exe = getModuleFilename(thread.tp.processId))
     {
         auto exea = WideStringToString(exe.value());
-        if (savedhookcontext.find(exea) == savedhookcontext.end())
-            return;
-
-        std::string hc = savedhookcontext[exea]["hookcode"];
-        uint64_t ctx1 = savedhookcontext[exea]["ctx1"];
-        uint64_t ctx2 = savedhookcontext[exea]["ctx2"];
+        std::string hc;
+        uint64_t ctx1, ctx2;
+        {
+            // safequeryjson: a hand-edited/partial entry must not throw on this pipe thread
+            std::lock_guard _(statemutex);
+            auto found = savedhookcontext.find(exea);
+            if (found == savedhookcontext.end())
+                return;
+            hc = safequeryjson(found->second, "hookcode", std::string());
+            ctx1 = safequeryjson(found->second, "ctx1", (uint64_t)0);
+            ctx2 = safequeryjson(found->second, "ctx2", (uint64_t)0);
+        }
         // ctx/ctx2 are often addresses inside the game's modules, which ASLR moves on every
         // reboot; module bases are 64KB aligned so only the low 16 bits are stable.
         if (((ctx1 & 0xffff) == (thread.tp.ctx & 0xffff)) && ((ctx2 & 0xffff) == (thread.tp.ctx2 & 0xffff)) && (hc == WideStringToString(thread.hp.hookcode)))

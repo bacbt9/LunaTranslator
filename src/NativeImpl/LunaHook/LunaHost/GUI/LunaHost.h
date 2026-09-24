@@ -122,6 +122,14 @@ public:
     std::set<std::string> autoattachexes;
     std::unordered_map<std::string, nlohmann::json> savedhookcontext;
     std::set<int> userdetachedpids;
+    // guards attachedprocess, autoattachexes, savedhookcontext, userdetachedpids: they are touched
+    // from the UI thread, the auto-attach thread and the host's pipe threads
+    std::recursive_mutex statemutex;
+    std::set<DWORD> attachedsnapshot()
+    {
+        std::lock_guard _(statemutex);
+        return attachedprocess;
+    }
     textfilter::Config filtercfg;
     void saveall();
     void on_close();
