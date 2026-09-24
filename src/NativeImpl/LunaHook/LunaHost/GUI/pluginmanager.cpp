@@ -116,7 +116,8 @@ Pluginmanager::Pluginmanager(LunaHost *_host) : host(_host), configs(_host->conf
 
 bool Pluginmanager::dispatch(TextThread &thread, std::wstring &sentence)
 {
-    auto sentenceInfo = GetSentenceInfo(thread).data();
+    auto sentenceInfoArray = GetSentenceInfo(thread);
+    auto sentenceInfo = sentenceInfoArray.data();
     wchar_t *sentenceBuffer = (wchar_t *)HeapAlloc(GetProcessHeap(), HEAP_GENERATE_EXCEPTIONS, (sentence.size() + 1) * sizeof(wchar_t));
     wcscpy_s(sentenceBuffer, sentence.size() + 1, sentence.c_str());
     concurrency::reader_writer_lock::scoped_lock_read readLock(OnNewSentenceSLock);
@@ -442,17 +443,17 @@ addpluginresult Pluginmanager::addplugin(const std::wstring &p)
 
 std::array<InfoForExtension, 20> Pluginmanager::GetSentenceInfo(TextThread &thread)
 {
-    void (*AddText)(int64_t, const wchar_t *) = [](int64_t number, const wchar_t *text)
-    {
-        if (TextThread *thread = Host::GetThread(number))
-            thread->Push(text);
-    };
+    // TextThread no longer exposes AddSentence/Push(wchar_t*); feed text straight to the output callback.
     void (*AddSentence)(int64_t, const wchar_t *) = [](int64_t number, const wchar_t *sentence)
     {
         if (TextThread *thread = Host::GetThread(number))
-            thread->AddSentence(sentence);
-        ;
+        {
+            std::wstring s = sentence;
+            if (TextThread::Output)
+                TextThread::Output(*thread, s);
+        }
     };
+    void (*AddText)(int64_t, const wchar_t *) = AddSentence;
     static DWORD SelectedProcessId;
     auto currthread = (TextThread *)host->currentselect;
     SelectedProcessId = (currthread != 0) ? currthread->tp.processId : 0;

@@ -8,7 +8,6 @@
 #include "textthread.h"
 #include "LunaHost.h"
 #include "http.hpp"
-extern std::vector<std::tuple<SUPPORT_LANG, std::wstring, std::vector<std::string>>> lang_map;
 bool sendclipboarddata_i(const std::wstring &text, HWND hwnd)
 {
     if (!OpenClipboard((HWND)hwnd))
@@ -52,7 +51,6 @@ void LunaHost::savesettings()
     configs->set("AutoAttach", autoattach);
     configs->set("AutoAttach_SavedOnly", autoattach_savedonly);
     configs->set("flushDelay", TextThread::flushDelay);
-    configs->set("filterRepetition", TextThread::filterRepetition);
     configs->set("maxBufferSize", TextThread::maxBufferSize);
     configs->set("maxHistorySize", TextThread::maxHistorySize);
     configs->set("defaultCodepage", Host::defaultCodepage);
@@ -62,24 +60,10 @@ void LunaHost::savesettings()
     configs->set("fontsize", uifont.fontsize);
     configs->set("font_italic", uifont.italic);
     configs->set("font_bold", uifont.bold);
-    configs->set("Language", map_from_support_lang(curr_lang));
 }
 
-std::string getdefaultlang()
-{
-    LANGID langid = GetUserDefaultUILanguage();
-    CHAR szLang[100];
-    std::string lang;
-    GetLocaleInfoA(MAKELCID(langid, SORT_DEFAULT), LOCALE_SISO639LANGNAME, szLang, 100);
-    lang += szLang;
-    GetLocaleInfoA(MAKELCID(langid, SORT_DEFAULT), LOCALE_SISO3166CTRYNAME, szLang, 100);
-    lang += "-";
-    lang += szLang;
-    return lang;
-}
 void LunaHost::loadsettings()
 {
-    curr_lang = map_to_support_lang(configs->get("Language", getdefaultlang()).c_str());
     uifont.italic = configs->get("font_italic", false);
     uifont.bold = configs->get("font_bold", false);
     uifont.fontsize = configs->get("fontsize", 14);
@@ -88,7 +72,6 @@ void LunaHost::loadsettings()
     autoattach = configs->get("AutoAttach", false);
     autoattach_savedonly = configs->get("AutoAttach_SavedOnly", true);
     TextThread::flushDelay = configs->get("flushDelay", TextThread::flushDelay);
-    TextThread::filterRepetition = configs->get("filterRepetition", TextThread::filterRepetition);
     TextThread::maxBufferSize = configs->get("maxBufferSize", TextThread::maxBufferSize);
     TextThread::maxHistorySize = configs->get("maxHistorySize", TextThread::maxHistorySize);
     Host::defaultCodepage = configs->get("defaultCodepage", Host::defaultCodepage);
@@ -144,8 +127,9 @@ void LunaHost::on_proc_connect(DWORD pid)
             std::string name = safequeryjson(savedhookcontext[u8procname], "name", std::string());
             if (startWith(name, "UserHook"))
             {
-                if (auto hp = HookCode::Parse(StringToWideString(std::string_view(savedhookcontext[u8procname]["hookcode"]))))
-                    Host::InsertHook(pid, hp.value());
+                std::string hookcode = safequeryjson(savedhookcontext[u8procname], "hookcode", std::string());
+                if (!hookcode.empty())
+                    Host::InsertHook(pid, StringToWideString(hookcode));
             }
         }
     }
@@ -198,12 +182,12 @@ LunaHost::LunaHost()
     };
     g_hButton_insert->onclick = [&]()
     {
-        auto hp = HookCode::Parse(std::move(g_hEdit_userhook->text()));
-        if (hp)
+        auto hookcode = g_hEdit_userhook->text();
+        if (!hookcode.empty())
         {
             for (auto _ : attachedprocess)
             {
-                Host::InsertHook(_, hp.value());
+                Host::InsertHook(_, hookcode);
             }
         }
         else
@@ -219,7 +203,7 @@ LunaHost::LunaHost()
         auto thread_p = g_hListBox_listtext->getdata(idx);
         std::wstring get;
         currentselect = thread_p;
-        std::wstring copy = ((TextThread *)thread_p)->storage->c_str();
+        std::wstring copy = ((TextThread *)thread_p)->GetHistoryText();
         strReplace(copy, L"\n", L"\r\n");
         showtext(copy, true);
     };
@@ -266,6 +250,8 @@ LunaHost::LunaHost()
         std::bind(&LunaHost::on_text_recv, this, std::placeholders::_1, std::placeholders::_2),
         [=](HOSTINFO type, const std::wstring &output)
         { on_info(type, output); },
+        {},
+        {},
         {},
         {});
 
@@ -466,13 +452,6 @@ Settingwindow::Settingwindow(LunaHost *host) : mainwindow(host)
         TextThread::maxHistorySize = v;
     };
 
-    ckbfilterrepeat = new checkbox(this, TR[LblFilterRepeat]);
-    ckbfilterrepeat->onclick = [=]()
-    {
-        TextThread::filterRepetition = ckbfilterrepeat->ischecked();
-    };
-    ckbfilterrepeat->setcheck(TextThread::filterRepetition);
-
     g_check_clipboard = new checkbox(this, TR[BtnToClipboard]);
     g_check_clipboard->onclick = [=]()
     {
@@ -527,38 +506,25 @@ Settingwindow::Settingwindow(LunaHost *host) : mainwindow(host)
             showfont->settext(f.fontfamily);
             host->setfont(f); });
     };
-    language = new combobox(this);
-    for (auto &&[_, l, __] : lang_map)
-    {
-        language->additem(l);
-    }
-    language->setcurrent(curr_lang);
-    language->oncurrentchange = [](int idx)
-    {
-        curr_lang = (decltype(curr_lang))idx;
-    };
     mainlayout = new gridlayout();
-    mainlayout->addcontrol(new label(this, TR[LblLanguage]), 0, 0);
-    mainlayout->addcontrol(language, 0, 1);
-    mainlayout->addcontrol(new label(this, TR[LblFlushDelay]), 1, 0);
-    mainlayout->addcontrol(g_timeout, 1, 1);
+    mainlayout->addcontrol(new label(this, TR[LblFlushDelay]), 0, 0);
+    mainlayout->addcontrol(g_timeout, 0, 1);
 
-    mainlayout->addcontrol(new label(this, TR[LblCodePage]), 2, 0);
-    mainlayout->addcontrol(g_codepage, 2, 1);
+    mainlayout->addcontrol(new label(this, TR[LblCodePage]), 1, 0);
+    mainlayout->addcontrol(g_codepage, 1, 1);
 
-    mainlayout->addcontrol(new label(this, TR[LblMaxBuff]), 3, 0);
-    mainlayout->addcontrol(spinmaxbuffsize, 3, 1);
+    mainlayout->addcontrol(new label(this, TR[LblMaxBuff]), 2, 0);
+    mainlayout->addcontrol(spinmaxbuffsize, 2, 1);
 
-    mainlayout->addcontrol(new label(this, TR[LblMaxHist]), 4, 0);
-    mainlayout->addcontrol(spinmaxhistsize, 4, 1);
+    mainlayout->addcontrol(new label(this, TR[LblMaxHist]), 3, 0);
+    mainlayout->addcontrol(spinmaxhistsize, 3, 1);
 
-    mainlayout->addcontrol(ckbfilterrepeat, 5, 0, 1, 2);
-    mainlayout->addcontrol(g_check_clipboard, 6, 0, 1, 2);
-    mainlayout->addcontrol(autoattach, 7, 0, 1, 2);
-    mainlayout->addcontrol(autoattach_so, 8, 0, 1, 2);
-    mainlayout->addcontrol(readonlycheck, 9, 0, 1, 2);
-    mainlayout->addcontrol(showfont, 10, 1);
-    mainlayout->addcontrol(selectfont, 10, 0);
+    mainlayout->addcontrol(g_check_clipboard, 4, 0, 1, 2);
+    mainlayout->addcontrol(autoattach, 5, 0, 1, 2);
+    mainlayout->addcontrol(autoattach_so, 6, 0, 1, 2);
+    mainlayout->addcontrol(readonlycheck, 7, 0, 1, 2);
+    mainlayout->addcontrol(showfont, 8, 1);
+    mainlayout->addcontrol(selectfont, 8, 0);
 
     setlayout(mainlayout);
     setcentral(600, 500);

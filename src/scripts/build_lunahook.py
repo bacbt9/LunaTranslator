@@ -43,25 +43,49 @@ def run(cmd, check=True):
     return r.returncode == 0
 
 
-def detect_generator():
+def find_vs():
+    """Return (installationVersion, installationPath) of the newest VS, or (None, None)."""
     vswhere = os.path.join(
         os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
         r"Microsoft Visual Studio\Installer\vswhere.exe",
     )
-    if os.path.exists(vswhere):
-        out = subprocess.run(
-            [vswhere, "-latest", "-products", "*", "-property", "installationVersion"],
+    if not os.path.exists(vswhere):
+        return None, None
+    info = {}
+    for prop in ("installationVersion", "installationPath"):
+        info[prop] = subprocess.run(
+            [vswhere, "-latest", "-products", "*", "-requires",
+             "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", prop],
             capture_output=True,
             text=True,
         ).stdout.strip()
-        major = out.split(".")[0] if out else ""
+    return info["installationVersion"] or None, info["installationPath"] or None
+
+
+def setup_tools(generator):
+    version, path = find_vs()
+    if not generator:
+        major = version.split(".")[0] if version else ""
         known = {"18": "Visual Studio 18 2026", "17": "Visual Studio 17 2022"}
-        if major in known:
-            return known[major]
-    sys.exit(
-        "Could not detect a Visual Studio installation (2022 or 2026 needed). "
-        'Pass --generator "Visual Studio 17 2022" explicitly.'
-    )
+        if major not in known:
+            sys.exit(
+                "Could not find Visual Studio 2022/2026 with the C++ workload. "
+                'Install it, or pass --generator "Visual Studio 17 2022" explicitly.'
+            )
+        generator = known[major]
+    # fall back to the cmake/git that ship with Visual Studio
+    if path:
+        ext = os.path.join(path, r"Common7\IDE\CommonExtensions\Microsoft")
+        for tool, sub in (
+            ("cmake", r"CMake\CMake\bin"),
+            ("git", r"TeamFoundation\Team Explorer\Git\cmd"),
+        ):
+            if not shutil.which(tool) and os.path.isdir(os.path.join(ext, sub)):
+                os.environ["PATH"] = os.path.join(ext, sub) + os.pathsep + os.environ["PATH"]
+    for tool in ("cmake", "git"):
+        if not shutil.which(tool):
+            sys.exit(f"'{tool}' not found. Install it or add it to PATH.")
+    return generator
 
 
 def target_flags(target):
@@ -72,9 +96,9 @@ def target_flags(target):
     }[target]
 
 
-def configure(builddir, generator, arch, flags):
+def configure(builddir, generator, arch, flags, check=True):
     platform = "x64" if arch == "x64" else "Win32"
-    run(
+    return run(
         [
             "cmake",
             "-S", ".",
@@ -83,7 +107,8 @@ def configure(builddir, generator, arch, flags):
             "-A", platform,
             "-T", f"host={arch}",
             *flags,
-        ]
+        ],
+        check=check,
     )
 
 
@@ -136,7 +161,7 @@ def main():
     if os.name != "nt":
         sys.exit("LunaHook can only be built on Windows (MSVC).")
 
-    generator = args.generator or detect_generator()
+    generator = setup_tools(args.generator)
     archs = ["x86", "x64"] if args.arch == "all" else [args.arch]
     target = args.target
     # must match binary_out_putpath in LunaHook/CMakeLists.txt
@@ -161,15 +186,20 @@ def main():
         build(hookdir)
 
         # 2) the host dll (+ optional GUI exe)
-        hostflags = flags + ["-DBUILD_HOOK=OFF", f"-DBUILD_GUI={'OFF' if args.no_gui else 'ON'}"]
+        hostflags = flags + ["-DBUILD_HOOK=OFF"]
         if target != "win10":
             hostflags.append("-DUSE_VC_LTL=ON")
         hostdir = f"build/{arch}_{target}_host"
-        configure(hostdir, generator, arch, hostflags)
+        want_gui = not args.no_gui
+        if want_gui and not configure(hostdir, generator, arch, hostflags + ["-DBUILD_GUI=ON"], check=args.require_gui):
+            print("GUI configure failed, continuing without it", flush=True)
+            want_gui = False
+            gui_failed.append(arch)
+        if not want_gui:
+            configure(hostdir, generator, arch, hostflags + ["-DBUILD_GUI=OFF"])
         build(hostdir, "LunaHostDll")
-        if not args.no_gui:
-            if not build(hostdir, "LunaHost", check=args.require_gui):
-                gui_failed.append(arch)
+        if want_gui and not build(hostdir, "LunaHost", check=args.require_gui):
+            gui_failed.append(arch)
 
     # keep only the binaries
     for name in os.listdir(outdir):
@@ -191,7 +221,8 @@ def main():
         print("zip:", zippath)
 
     if gui_failed:
-        print(f"\nWARNING: GUI (LunaHost.exe) failed to build for {gui_failed}; DLLs are fine.")
+        msg = f"GUI (LunaHost.exe) failed to build for {gui_failed}; the DLLs are fine."
+        print(("::warning::" if os.environ.get("GITHUB_ACTIONS") else "\nWARNING: ") + msg)
 
 
 if __name__ == "__main__":

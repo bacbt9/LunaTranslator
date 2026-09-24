@@ -16,7 +16,6 @@ public:
 };
 class Settingwindow : public mainwindow
 {
-    checkbox *ckbfilterrepeat;
     spinbox *g_timeout;
     spinbox *g_codepage;
     checkbox *g_check_clipboard;
@@ -29,7 +28,6 @@ class Settingwindow : public mainwindow
     gridlayout *mainlayout;
     lineedit *showfont;
     button *selectfont;
-    combobox *language;
 
 public:
     Settingwindow(LunaHost *);
