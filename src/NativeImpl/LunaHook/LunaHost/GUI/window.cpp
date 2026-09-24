@@ -137,6 +137,15 @@ LRESULT mainwindow::wndproc(UINT message, WPARAM wParam, LPARAM lParam)
             return DefWindowProc(winId, message, wParam, lParam);
         break;
     }
+    case WM_QUERYENDSESSION:
+        return TRUE;
+    case WM_ENDSESSION:
+    {
+        // Windows is shutting down / rebooting: WM_CLOSE never arrives, so save now.
+        if (wParam)
+            on_endsession();
+        break;
+    }
     case WM_CLOSE:
     {
         on_close();
@@ -228,6 +237,7 @@ void mainwindow::run()
 }
 
 void mainwindow::on_close() {}
+void mainwindow::on_endsession() {}
 void mainwindow::on_show() {}
 void mainwindow::on_size(int w, int h)
 {

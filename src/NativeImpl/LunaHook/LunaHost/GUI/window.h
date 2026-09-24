@@ -53,6 +53,7 @@ public:
     control *layout;
     virtual void on_show();
     virtual void on_close();
+    virtual void on_endsession();
     void on_size(int w, int h);
     mainwindow(mainwindow *_parent = 0);
     LRESULT wndproc(UINT message, WPARAM wParam, LPARAM lParam);

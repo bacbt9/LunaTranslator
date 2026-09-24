@@ -3,6 +3,7 @@
 #include "textthread.h"
 #include "pluginmanager.h"
 #include "confighelper.h"
+#include "textfilter.hpp"
 class LunaHost;
 class Pluginwindow : public mainwindow
 {
@@ -103,6 +104,10 @@ class LunaHost : public mainwindow
     void on_proc_connect(DWORD pid);
     void on_proc_disconnect(DWORD pid);
     void on_info(HOSTINFO type, const std::wstring &);
+    void on_endsession() override;
+
+    std::mutex lastlinesmutex;
+    std::unordered_map<TextThread *, std::wstring> lastlines;
 
     void showtext(const std::wstring &text, bool clear);
     void updatelisttext(const std::wstring &text, LONG_PTR data);
@@ -117,6 +122,8 @@ public:
     std::set<std::string> autoattachexes;
     std::unordered_map<std::string, nlohmann::json> savedhookcontext;
     std::set<int> userdetachedpids;
+    textfilter::Config filtercfg;
+    void saveall();
     void on_close();
     LunaHost();
     friend class Settingwindow;

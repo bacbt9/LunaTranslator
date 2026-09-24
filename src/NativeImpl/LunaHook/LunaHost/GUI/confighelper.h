@@ -10,6 +10,7 @@ public:
     nlohmann::json configs;
     confighelper();
     ~confighelper();
+    void save();
     template <class T>
     T get(const std::string &key, T default1)
     {

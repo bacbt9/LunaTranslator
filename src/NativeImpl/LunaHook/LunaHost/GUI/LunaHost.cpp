@@ -7,7 +7,7 @@
 #include "host.h"
 #include "textthread.h"
 #include "LunaHost.h"
-#include "http.hpp"
+std::optional<std::wstring> englishTranslation(const std::wstring &);
 bool sendclipboarddata_i(const std::wstring &text, HWND hwnd)
 {
     if (!OpenClipboard((HWND)hwnd))
@@ -36,6 +36,7 @@ void LunaHost::on_close()
     hasstoped = true;
     savesettings();
     delete configs;
+    configs = nullptr;
     auto _attachedprocess = attachedprocess;
     for (auto pid : _attachedprocess)
     {
@@ -60,6 +61,24 @@ void LunaHost::savesettings()
     configs->set("fontsize", uifont.fontsize);
     configs->set("font_italic", uifont.italic);
     configs->set("font_bold", uifont.bold);
+    configs->set("filter_repeatedChars", filtercfg.repeatedChars);
+    configs->set("filter_charRepeatCount", filtercfg.charRepeatCount);
+    configs->set("filter_sensitivity", filtercfg.sensitivity);
+    configs->set("filter_repeatedPhrases", filtercfg.repeatedPhrases);
+    configs->set("filter_minPhraseLength", filtercfg.minPhraseLength);
+    configs->set("filter_typewriter", filtercfg.typewriter);
+    configs->set("filter_duplicateLines", filtercfg.duplicateLines);
+}
+void LunaHost::saveall()
+{
+    if (!configs)
+        return;
+    savesettings();
+    configs->save();
+}
+void LunaHost::on_endsession()
+{
+    saveall();
 }
 
 void LunaHost::loadsettings()
@@ -77,6 +96,13 @@ void LunaHost::loadsettings()
     Host::defaultCodepage = configs->get("defaultCodepage", Host::defaultCodepage);
     autoattachexes = configs->get("autoattachexes", std::set<std::string>{});
     savedhookcontext = configs->get("savedhookcontext", decltype(savedhookcontext){});
+    filtercfg.repeatedChars = configs->get("filter_repeatedChars", filtercfg.repeatedChars);
+    filtercfg.charRepeatCount = configs->get("filter_charRepeatCount", filtercfg.charRepeatCount);
+    filtercfg.sensitivity = configs->get("filter_sensitivity", filtercfg.sensitivity);
+    filtercfg.repeatedPhrases = configs->get("filter_repeatedPhrases", filtercfg.repeatedPhrases);
+    filtercfg.minPhraseLength = configs->get("filter_minPhraseLength", filtercfg.minPhraseLength);
+    filtercfg.typewriter = configs->get("filter_typewriter", filtercfg.typewriter);
+    filtercfg.duplicateLines = configs->get("filter_duplicateLines", filtercfg.duplicateLines);
 }
 
 std::unordered_map<std::wstring, std::vector<int>> getprocesslist();
@@ -231,11 +257,13 @@ LunaHost::LunaHost()
                     {"ctx1",tt->tp.ctx},
                     {"ctx2",tt->tp.ctx2},
                     {"name",WideStringToString(tt->name)}
-                }; });
+                };
+            saveall(); });
         menu.add(TR[MenuForgetSelect], [&, tt]()
                  {
                 if(auto pexe=getModuleFilename(tt->tp.processId))
-                        savedhookcontext.erase(WideStringToString(pexe.value())); });
+                        savedhookcontext.erase(WideStringToString(pexe.value()));
+                saveall(); });
         return menu;
     };
 
@@ -252,19 +280,20 @@ LunaHost::LunaHost()
         { on_info(type, output); },
         {},
         {},
-        {},
+        englishTranslation,
         {});
+    Host::ResetLanguage(); // host messages -> English; the hook asks for its own strings on connect
 
     mainlayout = new gridlayout();
     mainlayout->addcontrol(g_selectprocessbutton, 0, 0);
     mainlayout->addcontrol(btndetachall, 0, 1);
     mainlayout->addcontrol(btnshowsettionwindow, 0, 2);
-    // mainlayout->addcontrol(btnplugin, 0, 3);
-    mainlayout->addcontrol(g_hEdit_userhook, 1, 0, 1, 2);
-    mainlayout->addcontrol(g_hButton_insert, 1, 2);
+    mainlayout->addcontrol(btnplugin, 0, 3);
+    mainlayout->addcontrol(g_hEdit_userhook, 1, 0, 1, 3);
+    mainlayout->addcontrol(g_hButton_insert, 1, 3);
 
-    mainlayout->addcontrol(g_hListBox_listtext, 2, 0, 1, 3);
-    mainlayout->addcontrol(g_showtexts, 3, 0, 1, 3);
+    mainlayout->addcontrol(g_hListBox_listtext, 2, 0, 1, 4);
+    mainlayout->addcontrol(g_showtexts, 3, 0, 1, 4);
 
     mainlayout->setfixedheigth(0, 30);
     mainlayout->setfixedheigth(1, 30);
@@ -286,23 +315,6 @@ LunaHost::LunaHost()
     wsprintf(vs, L" | %s v%d.%d.%d", TR[VersionCurrent], LUNA_VERSION[0], LUNA_VERSION[1], LUNA_VERSION[2]);
     title += vs;
     settext(title);
-    std::thread([&]()
-                {
-            if (HttpRequest httpRequest{
-                L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-                L"lunatranslator.org",
-                L"GET",
-                L"/version"
-            }){
-                
-                try{
-                    auto resp=nlohmann::json::parse(WideStringToString(httpRequest.response));
-                    std::string ver=resp["version"];
-                    settext(text()+L" | "+TR[VersionLatest]+L" "+ StringToWideString(ver));
-                }
-                catch(std::exception&e){}
-            } })
-        .detach();
 }
 void LunaHost::on_text_recv_checkissaved(TextThread &thread)
 {
@@ -315,7 +327,9 @@ void LunaHost::on_text_recv_checkissaved(TextThread &thread)
         std::string hc = savedhookcontext[exea]["hookcode"];
         uint64_t ctx1 = savedhookcontext[exea]["ctx1"];
         uint64_t ctx2 = savedhookcontext[exea]["ctx2"];
-        if (((ctx1 & 0xffff) == (thread.tp.ctx & 0xffff)) && (ctx2 == thread.tp.ctx2) && (hc == WideStringToString(thread.hp.hookcode)))
+        // ctx/ctx2 are often addresses inside the game's modules, which ASLR moves on every
+        // reboot; module bases are 64KB aligned so only the low 16 bits are stable.
+        if (((ctx1 & 0xffff) == (thread.tp.ctx & 0xffff)) && ((ctx2 & 0xffff) == (thread.tp.ctx2 & 0xffff)) && (hc == WideStringToString(thread.hp.hookcode)))
         {
             for (int i = 0; i < g_hListBox_listtext->count(); i++)
             {
@@ -371,6 +385,20 @@ void LunaHost::on_text_recv(TextThread &thread, std::wstring &output)
 {
     if (hasstoped)
         return;
+    textfilter::filterText(output, filtercfg);
+    if (filtercfg.duplicateLines && !output.empty())
+    {
+        std::lock_guard _(lastlinesmutex);
+        auto &last = lastlines[&thread];
+        if (last == output)
+        {
+            output.clear();
+            return;
+        }
+        last = output;
+    }
+    if (output.empty())
+        return;
     if (!plugins->dispatch(thread, output))
         return;
 
@@ -410,6 +438,10 @@ void LunaHost::on_thread_delete(TextThread &thread)
 {
     if (currentselect == (LONG_PTR)&thread)
         currentselect = 0;
+    {
+        std::lock_guard _(lastlinesmutex);
+        lastlines.erase(&thread);
+    }
     int count = g_hListBox_listtext->count();
     for (int i = 0; i < count; i++)
     {
@@ -526,8 +558,35 @@ Settingwindow::Settingwindow(LunaHost *host) : mainwindow(host)
     mainlayout->addcontrol(showfont, 8, 1);
     mainlayout->addcontrol(selectfont, 8, 0);
 
+    // ---- repetition filters
+    auto &cfg = host->filtercfg;
+    auto addcheck = [&](int row, const wchar_t *text, bool &value)
+    {
+        auto ck = new checkbox(this, text);
+        ck->setcheck(value);
+        ck->onclick = [ck, &value]()
+        { value = ck->ischecked(); };
+        mainlayout->addcontrol(ck, row, 0, 1, 2);
+    };
+    auto addspin = [&](int row, const wchar_t *text, int &value, int minv, int maxv)
+    {
+        auto sp = new spinbox(this, value);
+        sp->setminmax(minv, maxv);
+        sp->onvaluechange = [&value](int v)
+        { value = v; };
+        mainlayout->addcontrol(new label(this, text), row, 0);
+        mainlayout->addcontrol(sp, row, 1);
+    };
+    addcheck(9, L"Remove repeated characters (ここんんにに → こんに)", cfg.repeatedChars);
+    addspin(10, L"    Repeat count (0 = auto detect)", cfg.charRepeatCount, 0, 10);
+    addspin(11, L"    Sensitivity % (higher = fewer false positives)", cfg.sensitivity, 50, 100);
+    addcheck(12, L"Remove repeated phrases (ABCABC → ABC)", cfg.repeatedPhrases);
+    addspin(13, L"    Minimum phrase length", cfg.minPhraseLength, 2, 100);
+    addcheck(14, L"Remove typewriter partial text (ここんこんに → こんに)", cfg.typewriter);
+    addcheck(15, L"Skip a line identical to the previous one from the same hook", cfg.duplicateLines);
+
     setlayout(mainlayout);
-    setcentral(600, 500);
+    setcentral(700, 800);
     settext(TR[TSetting]);
 }
 void Pluginwindow::on_size(int w, int h)
