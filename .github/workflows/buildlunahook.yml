@@ -1,100 +1,60 @@
 name: buildlunahook
 on:
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Also publish the zips to the 'LunaHook' GitHub release"
+        type: boolean
+        default: false
+  push:
+    paths:
+      - '.github/workflows/buildlunahook.yml'
+      - 'src/scripts/build_lunahook.py'
+      - 'src/NativeImpl/LunaHook/**'
+      - 'src/NativeImpl/version.cmake'
+      - 'src/NativeImpl/winxphelper.cmake'
 
 jobs:
-  build_xp:
-    runs-on: windows-2019
-    permissions:
-      id-token: write
-      attestations: write
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: GuillaumeFalourd/setup-windows10-sdk-action@v2
-        with:
-          sdk-version: 26100
-      - run: python src/scripts/build_lunahook.py build x86 0 xp
-      - run: python src/scripts/packlunahook.py
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: winxp
-          path: src/cpp/LunaHook/builds
-  
-  # build_plugin:
-  #   runs-on: windows-latest
-  #   strategy:
-  #     matrix:
-  #       include:
-  #         - bits: 32
-  #           qtarch: win32_msvc2019
-  #         - bits: 64
-  #           qtarch: win64_msvc2019_64
-  #   permissions:
-  #     id-token: write
-  #     attestations: write
-  #     contents: write
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: GuillaumeFalourd/setup-windows10-sdk-action@v2
-  #       with:
-  #         sdk-version: 22621
-      
-  #     - uses: jurplel/install-qt-action@v3.3.0
-  #       with:
-  #         version:      5.15.2
-  #         host:         windows
-  #         target:       desktop
-  #         arch:         ${{ matrix.qtarch }}
-  #         dir:          ${{ runner.temp }}
-  #         setup-python: true
-  #     - run: python src/scripts/build_lunahook.py plugin ${{ matrix.bits }}
-  #     - run: python src/scripts/packlunahook.py
-
-  #     - uses: actions/upload-artifact@v4
-  #       with:
-  #         name: plugin${{ matrix.bits }}
-  #         path: src/cpp/LunaHook/builds/plugin${{ matrix.bits }}.zip
-  #     - uses: softprops/action-gh-release@v2
-  #       with:
-  #         tag_name: LunaHook
-  #         files: src/cpp/LunaHook/builds/plugin${{ matrix.bits }}.zip
-  #       env:
-  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  build_x:
-    runs-on: windows-latest
-    strategy:
-      matrix:
-        bits: [64]
-    permissions:
-      id-token: write
-      attestations: write
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: GuillaumeFalourd/setup-windows10-sdk-action@v2
-        with:
-          sdk-version: 26100
-      - run: python src/scripts/build_lunahook.py build x64 0 win7
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{matrix.bits}}
-          path: src/cpp/LunaHook/builds
-  
   build:
     runs-on: windows-latest
-    needs: [build_x,build_xp]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: win10
+            arch: all
+          - target: win7
+            arch: all
+          - target: winxp
+            arch: x86
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
-            path: src/cpp/LunaHook/build
-      - run: python src/scripts/build_lunahook.py merge
+          python-version: '3.13'
+      - run: python src/scripts/build_lunahook.py --target ${{ matrix.target }} --arch ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: LunaHook_${{ matrix.target }}
+          path: src/NativeImpl/LunaHook/builds/Release_${{ matrix.target }}
+
+  release:
+    if: github.event_name == 'workflow_dispatch' && inputs.release
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          path: dist
+      - run: |
+          cd dist
+          for d in */; do (cd "$d" && zip -9 -r "../${d%/}.zip" .); done
+          ls -la
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: LunaHook
-          files: src/cpp/LunaHook/builds/*
+          files: dist/*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
