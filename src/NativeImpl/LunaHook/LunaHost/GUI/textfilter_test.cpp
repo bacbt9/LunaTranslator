@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <locale>
 #include <iostream>
+#include <chrono>
 using namespace textfilter;
 int fails=0;
 void chk(const wchar_t* in, const wchar_t* want, Config c={}){
@@ -42,5 +43,21 @@ int main(){
   // chars + phrase combined
   chk(L"ああいいううええおおかかききああいいううええおおかかきき",L"あいうえおかき");
   chk(L"「「そそれれでではは、、行行ここうう」」「「そそれれでではは、、行行ここうう」」",L"「それでは、行こう」");
-  printf("%d failures\n",fails); return fails;
+  // timing: worst cases must stay fast (they used to take seconds)
+  {
+    Config all; all.typewriter=true; all.duplicateLines=true;
+    std::vector<std::wstring> nasty={std::wstring(2000,L'…'), std::wstring(5000,L'…')};
+    std::wstring alt; for(int i=0;i<1000;i++) alt+=L"あい"; nasty.push_back(alt);
+    std::wstring mixed; for(int i=0;i<300;i++) mixed+=L"…… …"; nasty.push_back(mixed);
+    std::wstring rnd; unsigned x=1; for(int i=0;i<2000;i++){x=x*1103515245+12345; rnd+=wchar_t(0x3042+(x>>16)%80);} nasty.push_back(rnd);
+    for(auto &t:nasty){
+      auto a=std::chrono::steady_clock::now(); auto c=t; filterText(c,all);
+      auto ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-a).count();
+      bool ok=ms<200; if(!ok) fails++;
+      std::wcout<<(ok?L"ok   ":L"FAIL ")<<L"timing len="<<t.size()<<L" -> "<<ms<<L" ms\n";
+    }
+  }
+  chk(L"今日はいい天気ですね。今日はいい天気ですね。……………………",L"今日はいい天気ですね。……………………");
+  chk(L"……　……　……　……",L"……　……　……　……");
+  std::wcout<<fails<<L" failures\n"; return fails;
 }

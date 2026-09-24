@@ -7,7 +7,6 @@
 //   typewriter text       ここんこんにこんにちは         -> こんにちは   (each partial redraw captured)
 #include <string>
 #include <vector>
-#include <set>
 #include <cwctype>
 
 namespace textfilter
@@ -55,7 +54,9 @@ namespace textfilter
         int lo = fixedCount > 1 ? fixedCount : 2, hi = fixedCount > 1 ? fixedCount : 10;
         for (int n = lo; n <= hi; ++n)
         {
-            size_t covered = 0, repeatedRuns = 0;
+            size_t covered = 0;
+            wchar_t first = 0;
+            bool twoDifferent = false; // "……　……" is one char repeated, not doubled text
             for (auto &r : runs)
             {
                 if (isSpace(r.c))
@@ -63,11 +64,14 @@ namespace textfilter
                 if (r.len % n == 0)
                 {
                     covered += r.len;
-                    repeatedRuns += 1;
+                    if (!first)
+                        first = r.c;
+                    else if (r.c != first)
+                        twoDifferent = true;
                 }
             }
             // largest count that still explains the text wins: all-4 runs are x4, not x2
-            if (repeatedRuns >= 2 && covered * 100 >= total * (size_t)sensitivity)
+            if (twoDifferent && covered * 100 >= total * (size_t)sensitivity)
                 best = n;
         }
         if (!best)
@@ -86,35 +90,70 @@ namespace textfilter
     }
 
     // Adjacent duplicated blocks: "ABCABC" -> "ABC", "xxABCABCABCyy" -> "xxABCyy".
+    // O(n^2): for each block length, one linear scan counting how many consecutive positions
+    // satisfy s[k] == s[k + len]; a run of `len` such positions is a duplicated block.
     inline bool collapseRepeatedPhrases(std::wstring &s, int minLength)
     {
         if (minLength < 2)
             minLength = 2;
-        if (s.size() > 4000)
+        if (s.size() > 2000) // real dialogue lines are far shorter; keeps the worst case bounded
             return false;
         bool any = false;
-        // a line sent twice separated by a newline/space: "ABC\nABC"
-        for (bool changed = true; changed;)
+        // changes[q]: number of positions <= q whose char differs from the previous non-space char.
+        // nextsolid[q]: first non-space position >= q. A block [i, i+len) has at least two different
+        // non-space chars iff changes[end] - changes[first non-space] > 0 -> O(1) per check.
+        std::vector<size_t> changes, nextsolid;
+        auto recompute = [&]()
         {
-            changed = false;
-            for (size_t len = s.size() / 2; len >= (size_t)minLength && !changed; --len)
+            size_t n = s.size();
+            changes.assign(n, 0);
+            nextsolid.assign(n + 1, n);
+            wchar_t last = 0;
+            bool have = false;
+            for (size_t q = 0; q < n; ++q)
             {
-                for (size_t i = 0; i + 2 * len <= s.size(); ++i)
+                size_t c = q ? changes[q - 1] : 0;
+                if (!isSpace(s[q]))
                 {
-                    if (s[i] != s[i + len] || s.compare(i, len, s, i + len, len) != 0)
-                        continue;
-                    // skip "…………" and friends: needs at least two different non-space chars
-                    std::set<wchar_t> distinct;
-                    for (size_t k = i; k < i + len; ++k)
-                        if (!isSpace(s[k]))
-                            distinct.insert(s[k]);
-                    if (distinct.size() < 2)
-                        continue;
-                    s.erase(i + len, len);
-                    changed = any = true;
-                    break;
+                    if (have && s[q] != last)
+                        c += 1;
+                    last = s[q];
+                    have = true;
                 }
+                changes[q] = c;
             }
+            for (size_t q = n; q-- > 0;)
+                nextsolid[q] = isSpace(s[q]) ? nextsolid[q + 1] : q;
+        };
+        recompute();
+        for (size_t len = s.size() / 2; len >= (size_t)minLength; --len)
+        {
+            size_t run = 0;
+            for (size_t k = 0; k + len < s.size(); ++k)
+            {
+                run = (s[k] == s[k + len]) ? run + 1 : 0;
+                if (run < len)
+                    continue;
+                size_t i = k + 1 - len; // s[i, i+len) == s[i+len, i+2len)
+                // skip "…………" and friends: a block made of a single repeated char isn't a phrase
+                size_t f = nextsolid[i];
+                bool single = f >= i + len || changes[i + len - 1] == changes[f];
+                if (single)
+                {
+                    run = len - 1; // keep sliding; the next position gets checked the same way
+                    continue;
+                }
+                s.erase(i + len, len);
+                recompute();
+                any = true;
+                // rescan this length from just before the removed copy
+                k = (i > 0 ? i - 1 : 0);
+                run = 0;
+                if (i == 0)
+                    k = (size_t)-1; // loop increment brings it back to 0
+            }
+            if (len > s.size() / 2)
+                len = s.size() / 2 + 1; // string shrank; continue with the lengths that still fit
         }
         // "ABC\nABC" / "ABC ABC": identical blocks separated by whitespace
         for (bool changed = true; changed;)
@@ -143,7 +182,7 @@ namespace textfilter
     inline bool collapseTypewriter(std::wstring &s)
     {
         size_t n = s.size();
-        if (n < 4)
+        if (n < 4 || n > 1000)
             return false;
         // the full sentence is the longest one, so try the latest possible start first
         for (size_t j = n - 1; j >= 1; --j)
