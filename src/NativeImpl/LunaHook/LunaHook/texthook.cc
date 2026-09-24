@@ -372,7 +372,7 @@ void TextHook::Send(hook_context *context)
 
 		parsenewlineseperator(&buff);
 
-		bool canembed;
+		bool canembed = false; // was uninitialised when the hook isn't EMBED_ABLE
 		if (hp.type & EMBED_ABLE)
 		{
 			if (!checklengthembedable(hp, buff.size))

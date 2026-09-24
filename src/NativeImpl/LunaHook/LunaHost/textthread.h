@@ -51,6 +51,7 @@ private:
 	BYTE leadByte = 0;
 	std::mutex bufferMutex;
 	DWORD64 lastPushTime = 0;
+	DWORD64 lastCodepageError = 0; // rate limit for the "invalid code page" message
 	Synchronized<std::vector<std::wstring>> queuedDecodedSentences;
 	struct TimerDeleter
 	{

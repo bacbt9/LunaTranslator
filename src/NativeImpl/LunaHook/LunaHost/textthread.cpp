@@ -146,7 +146,14 @@ void TextThread::Push(BYTE *data, int length)
 		}
 		else
 		{
-			Host::AddConsoleOutput(TR[INVALID_CODEPAGE]);
+			// with a wrong code page every chunk fails; report at most every 10 s per thread
+			// instead of flooding the log (Push runs under bufferMutex, so this is safe)
+			auto now = GetTickCount64();
+			if (!lastCodepageError || now - lastCodepageError > 10000)
+			{
+				lastCodepageError = now;
+				Host::AddConsoleOutput(TR[INVALID_CODEPAGE]);
+			}
 		}
 	}
 
