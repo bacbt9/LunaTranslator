@@ -559,8 +559,9 @@ bool TextHook::InsertReadCode()
 void TextHook::RemoveHookCode()
 {
 	MH_DisableHook(location);
+	// wait for threads still inside Send; yield instead of spinning a core at 100%
 	while (useCount != 0)
-		;
+		Sleep(1);
 	MH_RemoveHook(location);
 }
 

@@ -266,6 +266,10 @@ namespace
 		while (ReadFile(hookPipe, buffer, PIPE_BUFFER_SIZE, &bytesRead, nullptr))
 			rpc::dispatch(buffer, bytesRead, processId);
 
+		// the game side is gone; this thread is the only user of the read pipe.
+		// hostPipe is left open on purpose: ProcessRecord::Send threads may still write to it after
+		// this point, and a closed (possibly reused) handle there would be worse than the small leak.
+		CloseHandle(hookPipe);
 		RemoveThreads([&](ThreadParam tp)
 					  { return tp.processId == processId; });
 		OnDisconnect(processId);
